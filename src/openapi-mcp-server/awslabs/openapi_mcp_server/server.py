@@ -60,29 +60,21 @@ async def create_mcp_server_async(config: Config) -> FastMCP:
     )
 
     try:
-        # Load OpenAPI spec
-        if not config.api_spec_url and not config.api_spec_path:
-            logger.error('No API spec URL or path provided')
-            raise ValueError('Either api_spec_url or api_spec_path must be provided')
-
-        logger.debug(
-            f'Loading OpenAPI spec from URL: {config.api_spec_url} or path: {config.api_spec_path}'
-        )
-        openapi_spec = load_openapi_spec(url=config.api_spec_url, path=config.api_spec_path)
-
-        # Validate the OpenAPI spec
-        if not validate_openapi_spec(openapi_spec):
-            logger.warning('OpenAPI specification validation failed, but continuing anyway')
-
-        # Create a client for the API
+        # Validate mandatory configuration early
         if not config.api_base_url:
             logger.error('No API base URL provided')
             raise ValueError('API base URL must be provided')
 
-        # Configure authentication using the auth factory
-        from awslabs.openapi_mcp_server.auth import get_auth_provider, is_auth_type_available
+        if not config.api_spec_url and not config.api_spec_path:
+            logger.error('No API spec URL or path provided')
+            raise ValueError('Either api_spec_url or api_spec_path must be provided')
 
-        # Import and register the specific auth provider
+        # ----------------------------------------------------------------
+        # Configure authentication BEFORE loading the OpenAPI spec so that
+        # the spec endpoint can be fetched with the appropriate credentials
+        # (e.g. when the spec is behind an OpenID Connect / OAuth2 gateway).
+        # ----------------------------------------------------------------
+        from awslabs.openapi_mcp_server.auth import get_auth_provider, is_auth_type_available
         from awslabs.openapi_mcp_server.auth.register import register_provider_by_type
 
         # Register only the provider we need
@@ -147,6 +139,11 @@ async def create_mcp_server_async(config: Config) -> FastMCP:
                     'cognito',
                     'Cognito authentication requires client ID, username, and password. Please provide them using --auth-cognito-client-id, --auth-cognito-username, and --auth-cognito-password command line arguments or corresponding environment variables.',
                 )
+            elif config.auth_type == 'openid':
+                handle_auth_error(
+                    'openid',
+                    'OpenID Connect authentication requires AUTH_OPENID_CONFIG_URL, AUTH_OPENID_CLIENT_ID, and AUTH_OPENID_CLIENT_SECRET environment variables.',
+                )
             else:
                 logger.warning(
                     'Continuing with incomplete authentication configuration. This may cause API requests to fail.'
@@ -155,6 +152,45 @@ async def create_mcp_server_async(config: Config) -> FastMCP:
         # Log authentication info
         if config.auth_type != 'none':
             logger.info(f'Using {auth_provider.provider_name} authentication')
+
+        # ----------------------------------------------------------------
+        # Load the OpenAPI spec.  Pass the Authorization header so that
+        # protected spec endpoints (e.g. behind an OIDC gateway) can be
+        # accessed without a redirect-to-login loop.
+        # ----------------------------------------------------------------
+        spec_auth_header: str = auth_headers.get('Authorization', '')
+        logger.debug(
+            f'Loading OpenAPI spec from URL: {config.api_spec_url} or path: {config.api_spec_path}'
+        )
+        openapi_spec = load_openapi_spec(
+            url=config.api_spec_url,
+            path=config.api_spec_path,
+            auth_header=spec_auth_header,
+        )
+
+        # Validate the OpenAPI spec
+        if not validate_openapi_spec(openapi_spec):
+            logger.warning('OpenAPI specification validation failed, but continuing anyway')
+
+        # Apply read-only filter: keep only GET operations
+        if config.readonly:
+            logger.info('READONLY=true: filtering spec to GET operations only')
+            filtered_paths: Dict[str, Any] = {}
+            for path, path_item in openapi_spec.get('paths', {}).items():
+                get_op = path_item.get('get')
+                if get_op is not None:
+                    # Preserve path-level fields (parameters, servers, …) plus the GET operation
+                    filtered_entry: Dict[str, Any] = {
+                        k: v for k, v in path_item.items()
+                        if k not in ('post', 'put', 'patch', 'delete', 'options', 'head', 'trace')
+                    }
+                    filtered_paths[path] = filtered_entry
+            removed = len(openapi_spec.get('paths', {})) - len(filtered_paths)
+            openapi_spec = {**openapi_spec, 'paths': filtered_paths}
+            logger.info(
+                f'READONLY filter: kept {len(filtered_paths)} paths with GET operations, '
+                f'removed {removed} non-GET-only paths'
+            )
 
         # Create the HTTP client with authentication and connection pooling
         client = HttpClientFactory.create_client(
@@ -527,9 +563,12 @@ def main():
         logger.error(f'Traceback: {traceback.format_exc()}')
         sys.exit(1)
 
-    # Run server with stdio transport only
-    logger.info('Running server with stdio transport')
-    mcp_server.run()
+    transport = config.transport or 'stdio'
+    logger.info(f'Running server with {transport} transport')
+    if transport in ('sse', 'http', 'streamable-http'):
+        mcp_server.run(transport=transport, host=config.host, port=config.port)
+    else:
+        mcp_server.run(transport='stdio')
 
 
 if __name__ == '__main__':

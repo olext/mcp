@@ -48,12 +48,21 @@ class Config:
     auth_cognito_user_pool_id: str = ''
     auth_cognito_region: str = 'us-east-1'
 
+    # OpenID Connect authentication
+    auth_openid_config_url: str = ''   # .well-known/openid-configuration URL
+    auth_openid_client_id: str = ''    # OIDC client ID
+    auth_openid_client_secret: str = ''  # OIDC client secret
+    auth_openid_scopes: str = 'openid'   # Space-separated scopes (default: openid)
+
+    # Read-only mode: when True only GET operations are exposed as tools/prompts
+    readonly: bool = False
+
     # Server configuration
     # Default to localhost for security; use SERVER_HOST env var to override when needed (e.g. in Docker)
     host: str = '127.0.0.1'
     port: int = 8000
     debug: bool = False
-    transport: str = 'stdio'  # stdio only
+    transport: str = 'stdio'
     message_timeout: int = 60
     version: str = '0.2.0'
 
@@ -101,6 +110,17 @@ def load_config(args: Any = None) -> Config:
         'AUTH_COGNITO_SCOPES': (lambda v: setattr(config, 'auth_cognito_scopes', v)),
         'AUTH_COGNITO_USER_POOL_ID': (lambda v: setattr(config, 'auth_cognito_user_pool_id', v)),
         'AUTH_COGNITO_REGION': (lambda v: setattr(config, 'auth_cognito_region', v)),
+        # OpenID Connect authentication environment variables
+        'AUTH_OPENID_CONFIG_URL': (lambda v: setattr(config, 'auth_openid_config_url', v)),
+        # Support both AUTH_OPENID_CLIENT_ID and AUTH_OPENID_CLIENTID (no underscore)
+        'AUTH_OPENID_CLIENT_ID': (lambda v: setattr(config, 'auth_openid_client_id', v)),
+        'AUTH_OPENID_CLIENTID': (lambda v: setattr(config, 'auth_openid_client_id', v)),
+        # Support both AUTH_OPENID_CLIENT_SECRET and AUTH_OPENID_CLIENTSECRET (no underscore)
+        'AUTH_OPENID_CLIENT_SECRET': (lambda v: setattr(config, 'auth_openid_client_secret', v)),
+        'AUTH_OPENID_CLIENTSECRET': (lambda v: setattr(config, 'auth_openid_client_secret', v)),
+        'AUTH_OPENID_SCOPES': (lambda v: setattr(config, 'auth_openid_scopes', v)),
+        # Read-only mode
+        'READONLY': (lambda v: setattr(config, 'readonly', v.lower() == 'true')),
         # Server configuration
         'SERVER_HOST': (lambda v: setattr(config, 'host', v)),
         'SERVER_PORT': (lambda v: setattr(config, 'port', int(v))),

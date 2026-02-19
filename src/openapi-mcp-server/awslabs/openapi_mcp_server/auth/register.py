@@ -64,6 +64,11 @@ def register_provider_by_type(auth_type: str) -> None:
 
         register_auth_provider('cognito', CognitoAuthProvider)
         logger.info('Registered Cognito authentication provider')
+    elif auth_type == 'openid':
+        from awslabs.openapi_mcp_server.auth.openid_auth import OpenIDAuthProvider
+
+        register_auth_provider('openid', OpenIDAuthProvider)
+        logger.info('Registered OpenID Connect authentication provider')
     else:
         logger.warning(f'Unknown auth type: {auth_type}, registering all providers')
         register_all_providers()
@@ -94,6 +99,12 @@ def register_all_providers() -> None:
         logger.info('Registered Cognito authentication provider')
     except ImportError:
         logger.debug('Cognito authentication provider not available')
+
+    # Register OpenID Connect provider
+    from awslabs.openapi_mcp_server.auth.openid_auth import OpenIDAuthProvider
+
+    register_auth_provider('openid', OpenIDAuthProvider)
+    logger.info('Registered OpenID Connect authentication provider')
 
 
 # Don't register providers automatically when this module is imported

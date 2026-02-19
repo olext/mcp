@@ -49,8 +49,23 @@ def extract_api_name_from_spec(spec: Dict[str, Any]) -> Optional[str]:
 # Import yaml conditionally to avoid errors if it's not installed
 try:
     import yaml
+
+    # Build a custom SafeLoader subclass that handles the YAML 1.1
+    # 'tag:yaml.org,2002:value' tag (the bare '=' scalar).  Some OpenAPI
+    # specs use '=' as a literal operator value (e.g. "operator: ="), which
+    # triggers this tag in YAML 1.1.  SafeLoader has no constructor for it
+    # by default, causing a ConstructorError.  We treat it as a plain string.
+    class _OpenAPIYamlLoader(yaml.SafeLoader):  # type: ignore[misc]
+        pass
+
+    _OpenAPIYamlLoader.add_constructor(
+        'tag:yaml.org,2002:value',
+        lambda loader, node: loader.construct_scalar(node),
+    )
+
 except ImportError:
     yaml = None  # type: Optional[Any]
+    _OpenAPIYamlLoader = None  # type: ignore[assignment,misc]
 
 
 # Try to import prance, but don't fail if it's not installed
@@ -63,8 +78,47 @@ except ImportError:
     logger.warning('Prance library not found. Reference resolution will be limited.')
 
 
+def _parse_content(content: bytes, text: str) -> Dict[str, Any]:
+    """Parse raw HTTP response content as JSON, falling back to YAML.
+
+    Args:
+        content: Raw response bytes.
+        text: Response text (used only for error messages).
+
+    Returns:
+        Dict[str, Any]: Parsed OpenAPI specification.
+
+    Raises:
+        ValueError: If the content cannot be parsed as JSON or YAML.
+
+    """
+    # Try JSON first (most common for OpenAPI specs served over HTTP)
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        pass
+
+    # Try YAML using a custom loader that also handles the YAML 1.1 value tag
+    # (= as a literal scalar, e.g. "operator: =")
+    if yaml is not None and _OpenAPIYamlLoader is not None:
+        try:
+            parsed = yaml.load(content, Loader=_OpenAPIYamlLoader)
+            if isinstance(parsed, dict):
+                logger.debug('Parsed OpenAPI spec as YAML')
+                return parsed
+        except Exception as yaml_err:
+            logger.warning(f'YAML parsing also failed: {yaml_err}')
+    else:
+        logger.warning('pyyaml not installed; cannot fall back to YAML parsing')
+
+    raise ValueError(
+        f'Could not parse OpenAPI spec as JSON or YAML. '
+        f'Response starts with: {text[:200]!r}'
+    )
+
+
 @cached(ttl_seconds=3600)  # Cache OpenAPI specs for 1 hour
-def load_openapi_spec(url: str = '', path: str = '') -> Dict[str, Any]:
+def load_openapi_spec(url: str = '', path: str = '', auth_header: str = '') -> Dict[str, Any]:
     """Load an OpenAPI specification from a URL or file path.
 
     If prance is available, it will be used to resolve references in the OpenAPI spec.
@@ -73,6 +127,8 @@ def load_openapi_spec(url: str = '', path: str = '') -> Dict[str, Any]:
     Args:
         url: URL to the OpenAPI specification
         path: Path to the OpenAPI specification file
+        auth_header: Optional Authorization header value (e.g. 'Bearer <token>' or 'Basic <b64>').
+            Used when the spec endpoint requires authentication.
 
     Returns:
         Dict[str, Any]: The parsed OpenAPI specification
@@ -93,10 +149,16 @@ def load_openapi_spec(url: str = '', path: str = '') -> Dict[str, Any]:
         logger.info(f'Fetching OpenAPI spec from URL: {url}')
         last_exception = None
 
+        # Build request headers
+        request_headers: Dict[str, str] = {}
+        if auth_header:
+            request_headers['Authorization'] = auth_header
+            logger.debug('Using Authorization header for OpenAPI spec fetch')
+
         # Use retry logic for network resilience
         for attempt in range(3):
             try:
-                response = httpx.get(url, timeout=10.0)
+                response = httpx.get(url, timeout=10.0, headers=request_headers)
                 response.raise_for_status()
 
                 if PRANCE_AVAILABLE:
@@ -118,11 +180,11 @@ def load_openapi_spec(url: str = '', path: str = '') -> Dict[str, Any]:
                         )
                         # Clean up the temporary file
                         Path(temp_path).unlink(missing_ok=True)
-                        # Fall back to basic parsing
-                        spec = response.json()
+                        # Fall back to basic parsing - the response may be YAML or JSON
+                        spec = _parse_content(response.content, response.text)
                 else:
                     # Basic parsing without reference resolution
-                    spec = response.json()
+                    spec = _parse_content(response.content, response.text)
 
                 # Validate the spec
                 if validate_openapi_spec(spec):
