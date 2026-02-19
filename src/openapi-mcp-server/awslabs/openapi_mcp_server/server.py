@@ -33,6 +33,22 @@ from fastmcp.server.openapi import FastMCPOpenAPI, MCPType, RouteMap
 from typing import Any, Dict
 
 
+class _ProviderAuth(httpx.Auth):
+    """httpx.Auth adapter that calls auth_provider.get_auth_headers() on every request.
+
+    This ensures token-refresh logic (e.g. OpenID Connect, Cognito) is invoked
+    before each API call instead of only once at server startup.
+    """
+
+    def __init__(self, provider) -> None:
+        self._provider = provider
+
+    def auth_flow(self, request):
+        for key, value in self._provider.get_auth_headers().items():
+            request.headers[key] = value
+        yield request
+
+
 async def create_mcp_server_async(config: Config) -> FastMCP:
     """Create and configure the FastMCP server.
 
@@ -192,11 +208,16 @@ async def create_mcp_server_async(config: Config) -> FastMCP:
                 f'removed {removed} non-GET-only paths'
             )
 
-        # Create the HTTP client with authentication and connection pooling
+        # Create the HTTP client with authentication and connection pooling.
+        # Use _ProviderAuth so that token-refresh logic fires on every request
+        # (important for short-lived tokens such as OpenID Connect / Keycloak).
+        # If the provider already supplies an httpx.Auth object (e.g. Basic auth)
+        # prefer that; otherwise wrap the provider for dynamic header injection.
+        dynamic_auth = httpx_auth if httpx_auth is not None else _ProviderAuth(auth_provider)
         client = HttpClientFactory.create_client(
             base_url=config.api_base_url,
-            headers=auth_headers,
-            auth=httpx_auth,
+            headers={},
+            auth=dynamic_auth,
             cookies=auth_cookies,
         )
         logger.info(f'Created HTTP client for API base URL: {config.api_base_url}')
