@@ -41,6 +41,7 @@ dependencies = [
     "pyyaml>=6.0.2",
     "openapi-spec-validator>=0.7.2",
     "bcrypt>=4.3.0",
+    "PyJWT[crypto]>=2.0.0",
 ]
 
 

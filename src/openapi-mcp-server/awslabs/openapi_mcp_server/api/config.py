@@ -57,6 +57,12 @@ class Config:
     # Read-only mode: when True only GET operations are exposed as tools/prompts
     readonly: bool = False
 
+    # MCP server incoming auth: validates JWT Bearer tokens from connecting clients (e.g. MS Foundry)
+    mcp_auth_enabled: bool = False
+    mcp_auth_jwks_url: str = ''   # JWKS endpoint; auto-discovered from AUTH_OPENID_CONFIG_URL if empty
+    mcp_auth_issuer: str = ''     # Expected JWT iss claim; auto-discovered if empty
+    mcp_auth_audience: str = ''   # Optional JWT aud claim to verify
+
     # Server configuration
     # Default to localhost for security; use SERVER_HOST env var to override when needed (e.g. in Docker)
     host: str = '127.0.0.1'
@@ -121,6 +127,11 @@ def load_config(args: Any = None) -> Config:
         'AUTH_OPENID_SCOPES': (lambda v: setattr(config, 'auth_openid_scopes', v)),
         # Read-only mode
         'READONLY': (lambda v: setattr(config, 'readonly', v.lower() == 'true')),
+        # MCP server incoming auth
+        'MCP_AUTH_ENABLED': (lambda v: setattr(config, 'mcp_auth_enabled', v.lower() == 'true')),
+        'MCP_AUTH_JWKS_URL': (lambda v: setattr(config, 'mcp_auth_jwks_url', v)),
+        'MCP_AUTH_ISSUER': (lambda v: setattr(config, 'mcp_auth_issuer', v)),
+        'MCP_AUTH_AUDIENCE': (lambda v: setattr(config, 'mcp_auth_audience', v)),
         # Server configuration
         'SERVER_HOST': (lambda v: setattr(config, 'host', v)),
         'SERVER_PORT': (lambda v: setattr(config, 'port', int(v))),

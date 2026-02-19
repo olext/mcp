@@ -587,7 +587,51 @@ def main():
     transport = config.transport or 'stdio'
     logger.info(f'Running server with {transport} transport')
     if transport in ('sse', 'http', 'streamable-http'):
-        mcp_server.run(transport=transport, host=config.host, port=config.port)
+        middleware = []
+
+        if config.mcp_auth_enabled:
+            from awslabs.openapi_mcp_server.auth.jwt_middleware import (
+                JWTBearerMiddleware,
+                discover_oidc_fields,
+            )
+            from starlette.middleware import Middleware
+
+            jwks_url = config.mcp_auth_jwks_url
+            issuer = config.mcp_auth_issuer
+
+            # Auto-discover JWKS URL and issuer from the OIDC config document
+            # when not supplied explicitly — reuses AUTH_OPENID_CONFIG_URL
+            if (not jwks_url or not issuer) and config.auth_openid_config_url:
+                discovered = discover_oidc_fields(config.auth_openid_config_url)
+                jwks_url = jwks_url or discovered.get('jwks_uri', '')
+                issuer = issuer or discovered.get('issuer', '')
+
+            if not jwks_url:
+                logger.error(
+                    'MCP_AUTH_ENABLED=true but no JWKS URL available. '
+                    'Set MCP_AUTH_JWKS_URL or AUTH_OPENID_CONFIG_URL.'
+                )
+                sys.exit(1)
+
+            logger.info(
+                f'MCP server auth enabled: validating incoming Bearer JWTs '
+                f'(jwks={jwks_url}, issuer={issuer or "(not enforced)"})'
+            )
+            middleware.append(
+                Middleware(
+                    JWTBearerMiddleware,
+                    jwks_url=jwks_url,
+                    issuer=issuer,
+                    audience=config.mcp_auth_audience,
+                )
+            )
+
+        if middleware:
+            import uvicorn
+            asgi_app = mcp_server.http_app(transport=transport, middleware=middleware)
+            uvicorn.run(asgi_app, host=config.host, port=config.port)
+        else:
+            mcp_server.run(transport=transport, host=config.host, port=config.port)
     else:
         mcp_server.run(transport='stdio')
 
