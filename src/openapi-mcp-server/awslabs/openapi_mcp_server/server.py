@@ -588,8 +588,9 @@ def main():
     logger.info(f'Running server with {transport} transport')
     if transport in ('sse', 'http', 'streamable-http'):
         middleware = []
+        mcp_auth_type = (config.mcp_auth_type or '').lower()
 
-        if config.mcp_auth_enabled:
+        if mcp_auth_type == 'openid':
             from awslabs.openapi_mcp_server.auth.jwt_middleware import (
                 JWTBearerMiddleware,
                 discover_oidc_fields,
@@ -608,13 +609,13 @@ def main():
 
             if not jwks_url:
                 logger.error(
-                    'MCP_AUTH_ENABLED=true but no JWKS URL available. '
+                    'MCP_AUTH_TYPE=openid but no JWKS URL available. '
                     'Set MCP_AUTH_JWKS_URL or AUTH_OPENID_CONFIG_URL.'
                 )
                 sys.exit(1)
 
             logger.info(
-                f'MCP server auth enabled: validating incoming Bearer JWTs '
+                f'MCP server auth: validating incoming Bearer JWTs '
                 f'(jwks={jwks_url}, issuer={issuer or "(not enforced)"})'
             )
             middleware.append(
@@ -624,6 +625,33 @@ def main():
                     issuer=issuer,
                     audience=config.mcp_auth_audience,
                 )
+            )
+
+        elif mcp_auth_type == 'apikey':
+            from awslabs.openapi_mcp_server.auth.jwt_middleware import ApiKeyMiddleware
+            from starlette.middleware import Middleware
+
+            header_name = config.mcp_auth_apikey_name
+            header_value = config.mcp_auth_apikey_value
+
+            if not header_name or not header_value:
+                logger.error(
+                    'MCP_AUTH_TYPE=apikey requires MCP_AUTH_APIKEY_NAME and MCP_AUTH_APIKEY_VALUE.'
+                )
+                sys.exit(1)
+
+            logger.info(
+                f'MCP server auth: validating incoming requests by header '
+                f'{header_name!r}'
+            )
+            middleware.append(
+                Middleware(ApiKeyMiddleware, header_name=header_name, header_value=header_value)
+            )
+
+        elif mcp_auth_type:
+            logger.warning(
+                f'Unknown MCP_AUTH_TYPE={mcp_auth_type!r}; no incoming auth enforced. '
+                'Valid values: openid, apikey'
             )
 
         if middleware:

@@ -177,3 +177,36 @@ class JWTBearerMiddleware(BaseHTTPMiddleware):
             )
 
         return await call_next(request)
+
+
+class ApiKeyMiddleware(BaseHTTPMiddleware):
+    """Starlette middleware that validates a static header key/value pair.
+
+    Checks that the incoming request carries a specific header with the exact
+    expected value (case-sensitive).  Returns ``401 Unauthorized`` if the
+    header is missing or its value does not match.
+
+    Example MS Foundry credential:
+        Credential name:  Authorization
+        Credential value: Bearer <your-personal-access-token>
+    """
+
+    def __init__(self, app, header_name: str, header_value: str) -> None:
+        super().__init__(app)
+        # Store in lower-case; HTTP headers are case-insensitive and Starlette
+        # normalises them to lower-case in request.headers.
+        self._header_name = header_name.lower()
+        self._expected_value = header_value
+
+    async def dispatch(self, request: Request, call_next):
+        actual = request.headers.get(self._header_name, '')
+        if actual != self._expected_value:
+            logger.warning(
+                f'MCP auth (apikey): rejected request — '
+                f'header {self._header_name!r} missing or value mismatch'
+            )
+            return JSONResponse(
+                {'error': 'Unauthorized', 'detail': 'Invalid or missing API key'},
+                status_code=401,
+            )
+        return await call_next(request)
